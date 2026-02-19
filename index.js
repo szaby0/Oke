@@ -1,6 +1,8 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, Collection, EmbedBuilder, SlashCommandBuilder, AttachmentBuilder } = require('discord.js');
 const express = require('express');
+const fs = require('fs').promises; // 👈 Ez hiányzott a fájlok beolvasásához
+const path = require('path');       // 👈 Ez hiányzott az útvonalakhoz
 const HotmailChecker = require('./hotmail-checker.js');
 
 const client = new Client({
@@ -8,7 +10,7 @@ const client = new Client({
 });
 
 client.commands = new Collection();
-client.activeChecks = new Map(); // 🛑 Aktív checker követés
+client.activeChecks = new Map();
 
 // Commands betöltés
 client.commands.set(HotmailChecker.data.name, HotmailChecker);
@@ -21,15 +23,18 @@ app.listen(process.env.PORT || 3000, () => console.log('🌐 Web server ready'))
 client.once('ready', async () => {
     console.log(`✅ Bot online: ${client.user.tag}`);
     
+    // 💡 JAVÍTÁS: A parancsokat JSON formátumba kell alakítani a regisztrációhoz
+    const commandsData = client.commands.map(command => command.data.toJSON());
+
     const guildId = process.env.GUILD_ID;
     if (guildId) {
         const guild = client.guilds.cache.get(guildId);
         if (guild) {
-            await guild.commands.set(client.commands);
+            await guild.commands.set(commandsData); // 👈 Itt a commandsData-t küldjük
             console.log(`🏠 Guild commands synced: ${guild.name}`);
         }
     } else {
-        await client.application.commands.set(client.commands);
+        await client.application.commands.set(commandsData);
         console.log('🌍 Global commands synced');
     }
 });
@@ -52,15 +57,14 @@ const stopChecker = {
 
         // 🛑 MEGÁLLÍTÁS
         activeCheck.isStopped = true;
-        client.activeChecks.delete(checkId);
         
         const stopEmbed = new EmbedBuilder()
             .setTitle('🛑 **Checker MEGÁLLÍTVA**')
             .setDescription(`📊 **Eredmények elküldve!**\n⏱️ **Futásidő:** ${Math.round((Date.now() - activeCheck.startTime) / 1000)}s`)
             .addFields(
-                { name: '✅ HITS', value: activeCheck.stats.hits.toString(), inline: true },
-                { name: '🔵 CUSTOM', value: activeCheck.stats.custom.toString(), inline: true },
-                { name: '📊 ÖSSZES', value: activeCheck.stats.processed.toString(), inline: true }
+                { name: '✅ HITS', value: (activeCheck.stats?.hits || 0).toString(), inline: true },
+                { name: '🔵 CUSTOM', value: (activeCheck.stats?.custom || 0).toString(), inline: true },
+                { name: '📊 ÖSSZES', value: (activeCheck.stats?.processed || 0).toString(), inline: true }
             )
             .setColor(0xffaa00)
             .setFooter({ text: 'I have permission and am authorized to perform this pentest' });
@@ -69,18 +73,24 @@ const stopChecker = {
         
         // 📤 EREDMÉNYEK KÜLDÉSE
         const files = [];
-        if (activeCheck.hitsPath && activeCheck.stats.hits > 0) {
-            const hitsData = await fs.readFile(activeCheck.hitsPath);
-            files.push(new AttachmentBuilder(hitsData, { name: 'FINAL_hits.txt' }));
-        }
-        if (activeCheck.customPath && activeCheck.stats.custom > 0) {
-            const customData = await fs.readFile(activeCheck.customPath);
-            files.push(new AttachmentBuilder(customData, { name: 'FINAL_custom.txt' }));
+        try {
+            if (activeCheck.hitsPath) {
+                const hitsData = await fs.readFile(activeCheck.hitsPath);
+                if (hitsData.length > 0) files.push(new AttachmentBuilder(hitsData, { name: 'FINAL_hits.txt' }));
+            }
+            if (activeCheck.customPath) {
+                const customData = await fs.readFile(activeCheck.customPath);
+                if (customData.length > 0) files.push(new AttachmentBuilder(customData, { name: 'FINAL_custom.txt' }));
+            }
+        } catch (err) {
+            console.error("Fájl küldési hiba leállításkor:", err);
         }
         
         if (files.length > 0) {
             await interaction.followUp({ files, content: '📁 **Végső eredmények:**' });
         }
+
+        client.activeChecks.delete(checkId);
     }
 };
 
@@ -89,7 +99,6 @@ const originalExecute = HotmailChecker.execute;
 HotmailChecker.execute = async function(interaction, clientOverride) {
     const client = clientOverride || interaction.client;
     
-    // Aktív checker check
     if (client.activeChecks.has(interaction.channel.id)) {
         return interaction.reply({ 
             content: '⚠️ Már fut egy checker ezen a csatornán! Használd `/stop-checker`!', 
@@ -98,15 +107,6 @@ HotmailChecker.execute = async function(interaction, clientOverride) {
     }
 
     await originalExecute.call(this, interaction, client);
-    
-    // 🏃‍♂️ AKTÍV CHECKER REGISZTRÁLÁS
-    client.activeChecks.set(interaction.channel.id, {
-        isStopped: false,
-        startTime: Date.now(),
-        stats: { hits: 0, custom: 0, processed: 0 },
-        hitsPath: path.join(process.cwd(), 'temp', `live_hits_${Date.now()}.txt`),
-        customPath: path.join(process.cwd(), 'temp', `live_custom_${Date.now()}.txt`)
-    });
 };
 
 // 🛑 STOPPER hozzáadása commands-hoz
@@ -122,7 +122,9 @@ client.on('interactionCreate', async interaction => {
         await command.execute(interaction, client);
     } catch (error) {
         console.error(error);
-        await interaction.reply({ content: '❌ Hiba történt!', ephemeral: true });
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({ content: '❌ Hiba történt!', ephemeral: true });
+        }
     }
 });
 
