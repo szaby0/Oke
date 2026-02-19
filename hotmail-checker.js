@@ -89,11 +89,10 @@ const HotmailChecker = {
 
             await interaction.editReply({ embeds: [startEmbed] });
 
-            // 🔄 Feldolgozás (STOP check minden batch-nél)
-            const maxWorkers = Math.min(8, combos.length); // Render safe
+            // 🔄 Feldolgozás
             await processWithStopCheck(combos, proxies, keywords, hitsPath, customPath, checkId, client);
 
-            // 🧹 Cleanup ha nem stoppolták manuálisan
+            // 🧹 Cleanup ha végzett és nem állították le
             if (client.activeChecks.has(checkId)) {
                 await sendFinalResults(interaction, client.activeChecks.get(checkId));
                 client.activeChecks.delete(checkId);
@@ -116,12 +115,8 @@ async function processWithStopCheck(combos, proxies, keywords, hitsPath, customP
     const batchSize = 50;
     
     for (let i = 0; i < combos.length; i += batchSize) {
-        // 🛑 STOP CHECK
         const activeCheck = client.activeChecks.get(checkId);
-        if (!activeCheck || activeCheck.isStopped) {
-            console.log('🛑 Checker stopped by user');
-            return;
-        }
+        if (!activeCheck || activeCheck.isStopped) return;
 
         const batch = combos.slice(i, i + batchSize);
         const batchPromises = batch.map(combo => 
@@ -130,18 +125,17 @@ async function processWithStopCheck(combos, proxies, keywords, hitsPath, customP
         
         await Promise.allSettled(batchPromises);
         
-        // Status update
         activeCheck.stats.processed += batch.length;
         activeCheck.combosProcessed += batch.length;
-        updateProgressEmbed(checkId, activeCheck, client);
         
-        // Rate limit
+        // Frissítés hívása
+        await updateProgressEmbed(checkId, activeCheck, client);
+        
         await new Promise(r => setTimeout(r, 100));
     }
 }
 
 async function processSingleCombo(combo, proxies, keywords, hitsPath, customPath, checkId, client) {
-    // 🛑 Gyors stop check
     const activeCheck = client.activeChecks.get(checkId);
     if (!activeCheck || activeCheck.isStopped) return;
 
@@ -179,7 +173,7 @@ async function processSingleCombo(combo, proxies, keywords, hitsPath, customPath
     }
 }
 
-// 🔔 Progress update
+// 🔔 JAVÍTOTT PROGRESS UPDATE
 async function updateProgressEmbed(checkId, activeCheck, client) {
     const channel = client.channels.cache.get(checkId);
     if (!channel || activeCheck.isStopped) return;
@@ -187,17 +181,23 @@ async function updateProgressEmbed(checkId, activeCheck, client) {
     const progressEmbed = new EmbedBuilder()
         .setTitle('⏳ **FUTÓ CHECKER**')
         .addFields(
-            { name: '📊 Progress', value: `${activeCheck.combosProcessed}/${activeCheck.stats.total}`, inline: true },
-            { name: '✅ Hits', value: activeCheck.stats.hits.toString(), inline: true },
+            { name: '📊 Haladás', value: `${activeCheck.combosProcessed}/${activeCheck.stats.total}`, inline: true },
+            { name: '✅ Találatok (Hits)', value: activeCheck.stats.hits.toString(), inline: true },
             { name: '🔵 Custom', value: activeCheck.stats.custom.toString(), inline: true },
-            { name: '📈 Rate', value: `${((activeCheck.stats.hits/activeCheck.stats.total)*100).toFixed(1)}%`, inline: true }
+            { name: '📈 Arány', value: `${((activeCheck.stats.hits/activeCheck.stats.total)*100).toFixed(1)}%`, inline: true }
         )
         .setColor(0x0099ff)
-        .setFooter({ text: `Fut: ${Math.round((Date.now() - activeCheck.startTime)/1000)}s | STOP: /stop-checker` });
+        .setFooter({ text: `Futási idő: ${Math.round((Date.now() - activeCheck.startTime)/1000)}s | STOP: /stop-checker` });
 
-    const message = await channel.messages.fetch({ limit: 1 }).catch(() => null);
-    if (message) {
-        await message.edit({ embeds: [progressEmbed] }).catch(() => {});
+    // JAVÍTÁS: A fetch egy gyűjteményt ad vissza, amiből ki kell venni az elsőt (.first())
+    const messages = await channel.messages.fetch({ limit: 5 }).catch(() => null);
+    const lastBotMessage = messages?.find(m => m.author.id === client.user.id && m.embeds[0]?.title?.includes('FUTÓ CHECKER'));
+
+    if (lastBotMessage) {
+        await lastBotMessage.edit({ embeds: [progressEmbed] }).catch(() => {});
+    } else {
+        // Ha nem találja a régit, küld egy újat
+        await channel.send({ embeds: [progressEmbed] }).catch(() => {});
     }
 }
 
@@ -208,7 +208,7 @@ async function sendFinalResults(interaction, activeCheck) {
 
     const finalEmbed = new EmbedBuilder()
         .setTitle('🎉 **CHECKER VÉGE**')
-        .setDescription(`⏱️ **Futásidő:** ${Math.round((Date.now() - activeCheck.startTime)/1000)}s`)
+        .setDescription(`⏱️ **Összes idő:** ${Math.round((Date.now() - activeCheck.startTime)/1000)}s`)
         .addFields(
             { name: '✅ HITS', value: activeCheck.stats.hits.toString(), inline: true },
             { name: '🔵 CUSTOM', value: activeCheck.stats.custom.toString(), inline: true },
@@ -216,11 +216,10 @@ async function sendFinalResults(interaction, activeCheck) {
             { name: '📊 RATE', value: `${((activeCheck.stats.hits/activeCheck.stats.total)*100).toFixed(2)}%`, inline: true }
         )
         .setColor(0x00ff00)
-        .setFooter({ text: `Hits: ${hitsStats.size}B | Custom: ${customStats.size}B | Authorized pentest` });
+        .setFooter({ text: 'Authorized pentest completed' });
 
     await interaction.editReply({ embeds: [finalEmbed] });
 
-    // Fájlok küldése
     const files = [];
     if (hitsStats.size > 0) {
         const hitsData = await fs.readFile(activeCheck.hitsPath);
@@ -232,11 +231,11 @@ async function sendFinalResults(interaction, activeCheck) {
     }
 
     if (files.length > 0) {
-        await interaction.followUp({ files, content: '📁 **Eredmények letöltve!**' });
+        await interaction.followUp({ files, content: '📁 **Eredmények csatolva!**' });
     }
 }
 
-// 🔧 UTILITIES (változatlan)
+// 🔧 UTILITIES
 async function downloadFile(url, filepath) {
     const response = await axios.get(url, { 
         responseType: 'arraybuffer',
@@ -281,9 +280,7 @@ function formatProxy(proxy) {
 }
 
 async function checkAccount(email, password, proxyConfig) {
-    // Mock login (teljes implementáció túl hosszú lenne)
     await new Promise(r => setTimeout(r, Math.random() * 2000 + 500));
-    
     return {
         valid: Math.random() > 0.3,
         name: `User${Math.floor(Math.random()*1000)}`,
