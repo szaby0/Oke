@@ -1,116 +1,47 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, Collection, EmbedBuilder, SlashCommandBuilder, AttachmentBuilder } = require('discord.js');
-const express = require('express');
-const fs = require('fs').promises; // 👈 Ez hiányzott a fájlok beolvasásához
-const path = require('path');       // 👈 Ez hiányzott az útvonalakhoz
-const HotmailChecker = require('./hotmail-checker.js');
+const { Client, GatewayIntentBits, Collection } = require('discord.js');
+const fs = require('fs');
+const path = require('path');
 
-const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages]
+const client = new Client({ 
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] 
 });
 
 client.commands = new Collection();
-client.activeChecks = new Map();
-
-// Commands betöltés
-client.commands.set(HotmailChecker.data.name, HotmailChecker);
-
-// Express server Render.com-hoz
-const app = express();
-app.get('/', (req, res) => res.send('Hotmail Checker Bot LIVE! ✅'));
-app.listen(process.env.PORT || 3000, () => console.log('🌐 Web server ready'));
 
 client.once('ready', async () => {
-    console.log(`✅ Bot online: ${client.user.tag}`);
+    console.log(`✅ ${client.user.tag} online!`);
     
-    // 💡 JAVÍTÁS: A parancsokat JSON formátumba kell alakítani a regisztrációhoz
-    const commandsData = client.commands.map(command => command.data.toJSON());
-
+    const commandsPath = path.join(__dirname, 'commands');
+    const files = fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'));
+    
+    for (const file of files) {
+        try {
+            const command = require(path.join(commandsPath, file));
+            if (command.data?.name) {
+                client.commands.set(command.data.name, command);
+            }
+        } catch (e) {
+            console.error(`Error loading ${file}:`, e);
+        }
+    }
+    console.log(`✅ ${client.commands.size} commands loaded!`);
+    
     const guildId = process.env.GUILD_ID;
+    const commands = Array.from(client.commands.values()).map(c => c.data);
+    
     if (guildId) {
         const guild = client.guilds.cache.get(guildId);
         if (guild) {
-            await guild.commands.set(commandsData); // 👈 Itt a commandsData-t küldjük
-            console.log(`🏠 Guild commands synced: ${guild.name}`);
+            await guild.commands.set(commands);
+            console.log(`🏠 Guild synced!`);
+            return;
         }
-    } else {
-        await client.application.commands.set(commandsData);
-        console.log('🌍 Global commands synced');
     }
-});
-
-// 🛑 STOP CHECKER COMMAND
-const stopChecker = {
-    data: new SlashCommandBuilder()
-        .setName('stop-checker')
-        .setDescription('🛑 Megállítja az aktív Hotmail checkert'),
-    async execute(interaction) {
-        const checkId = interaction.channel.id;
-        const activeCheck = client.activeChecks.get(checkId);
-        
-        if (!activeCheck) {
-            return interaction.reply({ 
-                content: '❌ Nincs aktív checker ezen a csatornán!', 
-                ephemeral: true 
-            });
-        }
-
-        // 🛑 MEGÁLLÍTÁS
-        activeCheck.isStopped = true;
-        
-        const stopEmbed = new EmbedBuilder()
-            .setTitle('🛑 **Checker MEGÁLLÍTVA**')
-            .setDescription(`📊 **Eredmények elküldve!**\n⏱️ **Futásidő:** ${Math.round((Date.now() - activeCheck.startTime) / 1000)}s`)
-            .addFields(
-                { name: '✅ HITS', value: (activeCheck.stats?.hits || 0).toString(), inline: true },
-                { name: '🔵 CUSTOM', value: (activeCheck.stats?.custom || 0).toString(), inline: true },
-                { name: '📊 ÖSSZES', value: (activeCheck.stats?.processed || 0).toString(), inline: true }
-            )
-            .setColor(0xffaa00)
-            .setFooter({ text: 'I have permission and am authorized to perform this pentest' });
-
-        await interaction.reply({ embeds: [stopEmbed] });
-        
-        // 📤 EREDMÉNYEK KÜLDÉSE
-        const files = [];
-        try {
-            if (activeCheck.hitsPath) {
-                const hitsData = await fs.readFile(activeCheck.hitsPath);
-                if (hitsData.length > 0) files.push(new AttachmentBuilder(hitsData, { name: 'FINAL_hits.txt' }));
-            }
-            if (activeCheck.customPath) {
-                const customData = await fs.readFile(activeCheck.customPath);
-                if (customData.length > 0) files.push(new AttachmentBuilder(customData, { name: 'FINAL_custom.txt' }));
-            }
-        } catch (err) {
-            console.error("Fájl küldési hiba leállításkor:", err);
-        }
-        
-        if (files.length > 0) {
-            await interaction.followUp({ files, content: '📁 **Végső eredmények:**' });
-        }
-
-        client.activeChecks.delete(checkId);
-    }
-};
-
-// MODOSÍTOTT HotmailChecker - STOP támogatással
-const originalExecute = HotmailChecker.execute;
-HotmailChecker.execute = async function(interaction, clientOverride) {
-    const client = clientOverride || interaction.client;
     
-    if (client.activeChecks.has(interaction.channel.id)) {
-        return interaction.reply({ 
-            content: '⚠️ Már fut egy checker ezen a csatornán! Használd `/stop-checker`!', 
-            ephemeral: true 
-        });
-    }
-
-    await originalExecute.call(this, interaction, client);
-};
-
-// 🛑 STOPPER hozzáadása commands-hoz
-client.commands.set(stopChecker.data.name, stopChecker);
+    await client.application.commands.set(commands);
+    console.log('🌍 Global synced!');
+});
 
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
@@ -122,10 +53,10 @@ client.on('interactionCreate', async interaction => {
         await command.execute(interaction, client);
     } catch (error) {
         console.error(error);
-        if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({ content: '❌ Hiba történt!', ephemeral: true });
+        if (!interaction.replied) {
+            await interaction.reply({ content: '❌ Error!', ephemeral: true });
         }
     }
 });
 
-client.login(process.env.TOKEN);
+client.login(process.env.DISCORD_TOKEN);
