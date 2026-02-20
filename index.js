@@ -2,6 +2,20 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
+const express = require('express'); // Express beimportálása
+
+// --- Express Szerver beállítása a Render.com-hoz ---
+const app = express();
+const port = process.env.PORT || 3000; // A Render automatikusan ad portot
+
+app.get('/', (req, res) => {
+    res.send('A bot sikeresen fut!'); // Egyszerű válasz a health checkre
+});
+
+app.listen(port, () => {
+    console.log(`✅ Web szerver aktív a ${port}-es porton!`);
+});
+// --------------------------------------------------
 
 const client = new Client({ 
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] 
@@ -12,7 +26,15 @@ client.commands = new Collection();
 client.once('ready', async () => {
     console.log(`✅ ${client.user.tag} online!`);
     
+    // Figyelem: A parancsfájloknak a "commands" mappában kell lenniük!
     const commandsPath = path.join(__dirname, 'commands');
+    
+    // Ellenőrizzük, hogy létezik-e a mappa, hogy ne dőljön össze a bot
+    if (!fs.existsSync(commandsPath)) {
+        console.error('❌ Hiba: A "commands" mappa nem található!');
+        return;
+    }
+
     const files = fs.readdirSync(commandsPath).filter(f => f.endsWith('.js'));
     
     for (const file of files) {
@@ -25,7 +47,7 @@ client.once('ready', async () => {
             console.error(`Error loading ${file}:`, e);
         }
     }
-    console.log(`✅ ${client.commands.size} commands loaded!`);
+    console.log(`✅ ${client.commands.size} parancs betöltve!`);
     
     const guildId = process.env.GUILD_ID;
     const commands = Array.from(client.commands.values()).map(c => c.data);
@@ -34,13 +56,13 @@ client.once('ready', async () => {
         const guild = client.guilds.cache.get(guildId);
         if (guild) {
             await guild.commands.set(commands);
-            console.log(`🏠 Guild synced!`);
+            console.log(`🏠 Guild (szerver) parancsok frissítve!`);
             return;
         }
     }
     
     await client.application.commands.set(commands);
-    console.log('🌍 Global synced!');
+    console.log('🌍 Globális parancsok frissítve!');
 });
 
 client.on('interactionCreate', async interaction => {
@@ -53,8 +75,8 @@ client.on('interactionCreate', async interaction => {
         await command.execute(interaction, client);
     } catch (error) {
         console.error(error);
-        if (!interaction.replied) {
-            await interaction.reply({ content: '❌ Error!', ephemeral: true });
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({ content: '❌ Hiba történt a parancs futtatása közben!', ephemeral: true });
         }
     }
 });
