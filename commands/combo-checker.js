@@ -136,18 +136,20 @@ module.exports = {
     data: new SlashCommandBuilder()
         .setName('combo-checker')
         .setDescription('🔥 Combo + Proxy + Keywords + CONTACTS checker')
+        // 1. Kötelező opciók elöl
         .addAttachmentOption(option =>
             option.setName('combo')
                 .setDescription('Combo list (email:pass)')
                 .setRequired(true))
-        .addAttachmentOption(option =>
-            option.setName('proxies')
-                .setDescription('Proxy list (ip:port)')
-                .setRequired(false))
         .addStringOption(option =>
             option.setName('keywords')
                 .setDescription('Keywords & Contacts (rockstargames.com,amazon.com,admin,password)')
                 .setRequired(true))
+        // 2. Nem kötelező opciók utána
+        .addAttachmentOption(option =>
+            option.setName('proxies')
+                .setDescription('Proxy list (ip:port)')
+                .setRequired(false))
         .addChannelOption(option =>
             option.setName('channel')
                 .setDescription('Output')
