@@ -8,6 +8,7 @@
   "dependencies": {
     "discord.js": "^14.14.1",
     "axios": "^1.6.7",
+    "cheerio": "^1.0.0-rc.12",
     "uuid": "^9.0.1",
     "user-agents": "^1.1.170",
     "dotenv": "^16.3.1",
